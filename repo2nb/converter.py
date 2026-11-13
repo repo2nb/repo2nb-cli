@@ -1,28 +1,21 @@
 import pathlib
 
-import nbformat
-
 from . import __version__
 from .deps import resolve_dependencies
-from .notebook import assemble_notebook, content_hash, make_markdown_cell, make_pip_cell, make_writefile_cell
+from .notebook import (
+    SETUP_HEADER,
+    assemble_notebook,
+    content_hash,
+    make_directory_cell,
+    make_markdown_cell,
+    make_pip_cell,
+    make_writefile_cell,
+    write_notebook,
+)
 from .state import STATE_DIR, ensure_gitignore_entries, save_manifest
 from .targets import get_target
-from .traversal import traverse
+from .traversal import is_binary, read_text_files, traverse
 from .warnings import get_warning_cells
-
-
-def _is_binary(file_path: pathlib.Path, include: set = None) -> bool:
-    binary_extensions = {
-        '.pkl', '.pt', '.h5', '.png', '.jpg', '.jpeg', '.gif', '.zip', '.tar', '.gz',
-        '.csv', '.tsv', '.xlsx', '.xls', '.parquet', '.db', '.sqlite', '.pdf', '.ipynb',
-    }
-    if include:
-        include_exts = {ext.lower() if ext.startswith('.') else '.' + ext.lower() for ext in include}
-        binary_extensions = binary_extensions - include_exts
-    return file_path.suffix.lower() in binary_extensions
-
-
-SETUP_HEADER = "## 🔧 repo2nb setup (safe to collapse)\n\nGit auth and dependency installation. Collapsed where the viewer supports it — expand if you need to debug."
 
 
 def convert(repo_path: pathlib.Path, output_path: pathlib.Path, omit_instructions: bool = False,
@@ -35,6 +28,7 @@ def convert(repo_path: pathlib.Path, output_path: pathlib.Path, omit_instruction
     ensure_gitignore_entries(repo_path, [*target.GITIGNORE_ENTRIES, f"{STATE_DIR}/"])
 
     tree, has_git = traverse(repo_path, extra_ignore=ignore_extra)
+    contents = read_text_files(repo_path, tree, include)
 
     cells = []
 
@@ -45,6 +39,7 @@ def convert(repo_path: pathlib.Path, output_path: pathlib.Path, omit_instruction
     push_cells = []
     if has_git:
         setup_cells.extend(target.auth_cells(repo_path, omit_instructions))
+    if has_git or target_name == "kaggle":
         push_cells = target.workspace_cells(omit_instructions)
 
     file_hashes = {}
@@ -56,11 +51,16 @@ def convert(repo_path: pathlib.Path, output_path: pathlib.Path, omit_instruction
         elif source.startswith(("poetry", "uv", "requirements")):
             print(f"[repo2nb] WARNING: dependency source '{source}' produced no installable requirements.")
 
+    directory_cell = make_directory_cell(contents, target.WORKDIR_PREFIX)
+    if directory_cell is not None:
+        setup_cells.append(directory_cell)
+
     if setup_cells:
-        cells.append(make_markdown_cell(SETUP_HEADER))
+        header = make_markdown_cell(SETUP_HEADER)
+        header.metadata["repo2nb_setup"] = "header"
+        cells.append(header)
         collapse = target.collapse_metadata()
         for cell in setup_cells:
-            # Collapse code cells only; keep instruction markdown readable for debugging.
             if cell.cell_type == "code":
                 cell.metadata.update(collapse)
             cells.append(cell)
@@ -71,9 +71,11 @@ def convert(repo_path: pathlib.Path, output_path: pathlib.Path, omit_instruction
         phase2_text = (
             "# 📂 Phase 2: Repository Construction\n"
             "---\n"
-            "The following cells will recreate your project files within Kaggle's environment."
+            f"The following cells will recreate your project files within {target.NAME.title()}'s environment."
         )
-    cells.append(make_markdown_cell(phase2_text))
+    construction_header = make_markdown_cell(phase2_text)
+    construction_header.metadata["repo2nb_section"] = "files"
+    cells.append(construction_header)
 
     repo_name = repo_path.name
 
@@ -109,34 +111,34 @@ def convert(repo_path: pathlib.Path, output_path: pathlib.Path, omit_instruction
             except ValueError:
                 continue
 
-            kag_path = rel_file_path.as_posix()
+            rel_path = rel_file_path.as_posix()
 
-            if _is_binary(file_path, include):
-                cells.append(make_markdown_cell(f"**Skipped data/binary file**: `{kag_path}`\n*(Upload manually if needed)*"))
+            if is_binary(file_path, include):
+                cells.append(make_markdown_cell(f"**Skipped data/binary file**: `{rel_path}`\n*(Upload manually if needed)*"))
                 continue
 
             cells.append(make_markdown_cell(f"**📄 {rel_file_path.name}**"))
-            try:
-                with open(file_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                cells.append(make_writefile_cell(kag_path, content, prefix=target.WORKDIR_PREFIX))
-                file_hashes[kag_path] = content_hash(content)
-            except UnicodeDecodeError:
-                cells.append(make_markdown_cell(f"**Skipped non-UTF8 file**: `{kag_path}`\n*(Upload manually if needed)*"))
+            if rel_path in contents:
+                content = contents[rel_path]
+                cells.append(make_writefile_cell(rel_path, content, prefix=target.WORKDIR_PREFIX))
+                file_hashes[rel_path] = content_hash(content)
+            else:
+                cells.append(make_markdown_cell(f"**Skipped non-UTF8 file**: `{rel_path}`\n*(Upload manually if needed)*"))
 
     cells.extend(push_cells)
 
     nb = assemble_notebook(cells, target=target_name)
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        nbformat.write(nb, f)
+    write_notebook(nb, output_path)
 
     manifest = {
         "version": __version__,
         "generated_at": nb.metadata["repo2nb"]["generated_at"],
         "target": target_name,
-        "notebook": str(output_path),
+        "notebook": str(output_path.resolve()),
         "ignore_extra": sorted(ignore_extra),
+        "include": sorted(include or []),
+        "deps": deps,
         "files": file_hashes,
     }
     save_manifest(repo_path, manifest)

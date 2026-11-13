@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import tempfile
 
 STATE_DIR = ".repo2nb"
 MANIFEST_NAME = "manifest.json"
@@ -23,19 +24,27 @@ def load_manifest(repo_path: pathlib.Path):
 def save_manifest(repo_path: pathlib.Path, manifest: dict):
     state_dir = repo_path / STATE_DIR
     state_dir.mkdir(exist_ok=True)
-    tmp = state_dir / (MANIFEST_NAME + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2, sort_keys=True)
-    os.replace(tmp, state_dir / MANIFEST_NAME)
+    stream = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=state_dir, suffix=".tmp", delete=False,
+    )
+    tmp = pathlib.Path(stream.name)
+    try:
+        with stream:
+            json.dump(manifest, stream, indent=2, sort_keys=True)
+        os.replace(tmp, state_dir / MANIFEST_NAME)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def ensure_gitignore_entries(repo_path: pathlib.Path, entries: list):
     """Idempotently append entries to .gitignore, logging every write to the terminal."""
     gitignore = repo_path / ".gitignore"
     existing_lines = []
+    existing_text = ""
     created = False
     if gitignore.is_file():
-        existing_lines = gitignore.read_text(encoding="utf-8", errors="replace").splitlines()
+        existing_text = gitignore.read_text(encoding="utf-8", errors="replace")
+        existing_lines = existing_text.splitlines()
     else:
         created = True
 
@@ -44,6 +53,8 @@ def ensure_gitignore_entries(repo_path: pathlib.Path, entries: list):
         return
 
     with open(gitignore, "a", encoding="utf-8") as f:
+        if existing_text and not existing_text.endswith("\n"):
+            f.write("\n")
         if existing_lines and existing_lines[-1].strip():
             f.write("\n")
         for entry in to_add:

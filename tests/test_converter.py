@@ -1,4 +1,8 @@
+import pathlib
+import shlex
+
 import nbformat
+import pytest
 
 from repo2nb.converter import convert
 
@@ -20,12 +24,10 @@ def test_converter_no_git(tmp_path):
     nb = nbformat.read(str(output_path), as_version=4)
     cells = nb.cells
 
-    # usage cell, phase2 header, folder header, .gitignore (auto-created) + test.py with titles
     writefile_cells = [c for c in cells if "repo2nb" in c.metadata]
     assert [c.metadata["repo2nb"]["path"] for c in writefile_cells] == [".gitignore", "test.py"]
     assert "/kaggle/working/test.py" in writefile_cells[1].source
 
-    # no gitignore warning cell in the notebook anymore (moved to terminal logging)
     for cell in cells:
         assert "SECURITY & PUBLISHING WARNING" not in cell.source
 
@@ -104,7 +106,6 @@ def test_converter_setup_section_collapsed(tmp_path):
     pip_cells = [c for c in nb.cells if c.source.startswith("%pip install")]
     assert len(pip_cells) == 1
     assert "numpy" in pip_cells[0].source
-    # setup code cells carry collapse metadata and still run on Run All
     assert pip_cells[0].metadata.get("jupyter", {}).get("source_hidden") is True
 
 
@@ -117,3 +118,50 @@ def test_converter_no_deps_flag(tmp_path):
 
     nb = nbformat.read(str(tmp_path / "out.ipynb"), as_version=4)
     assert not [c for c in nb.cells if "%pip install" in c.source]
+
+
+def test_converter_reconstructs_nested_paths_with_spaces_in_clean_runtime(tmp_path, monkeypatch):
+    from repo2nb.targets import kaggle
+
+    repo = _make_repo(tmp_path)
+    nested = repo / "source files" / "deep" / "my module.py"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("value = 'nested'\n")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    monkeypatch.setattr(kaggle, "WORKDIR_PREFIX", str(runtime) + "/")
+    out = tmp_path / "out.ipynb"
+
+    convert(repo, out)
+
+    nb = nbformat.read(str(out), as_version=4)
+    for cell in nb.cells:
+        if cell.metadata.get("repo2nb_setup") == "directories":
+            exec(cell.source, {})
+        elif "repo2nb" in cell.metadata:
+            magic, content = cell.source.split("\n", 1)
+            command, destination = shlex.split(magic)
+            assert command == "%%writefile"
+            pathlib.Path(destination).write_text(content)
+    assert (runtime / "source files" / "deep" / "my module.py").read_text() == nested.read_text()
+
+
+def test_converter_failed_write_preserves_existing_notebook_and_neighbor(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path)
+    out = tmp_path / "out.ipynb"
+    out.write_text("existing notebook")
+    neighbor = tmp_path / "out.ipynb.tmp"
+    neighbor.write_text("user data")
+
+    def failed_write(nb, stream):
+        stream.write("partial notebook")
+        raise OSError("disk full")
+
+    monkeypatch.setattr("repo2nb.notebook.nbformat.write", failed_write)
+    with pytest.raises(OSError, match="disk full"):
+        convert(repo, out)
+
+    assert out.read_text() == "existing notebook"
+    assert neighbor.read_text() == "user data"
+    assert not list(tmp_path.glob(".out.ipynb.*.tmp"))
+    assert not (repo / ".repo2nb" / "manifest.json").exists()

@@ -50,7 +50,7 @@ def test_golden_kaggle_default(tmp_path):
     assert actual == expected
 
 
-def test_golden_kaggle_and_colab_differ_only_in_target_bits(tmp_path):
+def test_target_workflows(tmp_path):
     repo = tmp_path / "fixture_repo"
     _build_fixture(repo, with_git=True)
 
@@ -64,5 +64,6 @@ def test_golden_kaggle_and_colab_differ_only_in_target_bits(tmp_path):
 
     k_srcs = [cell.source for cell in k.cells]
     c_srcs = [cell.source for cell in c.cells]
-    assert any("kaggle_secrets" in s for s in k_srcs)
+    assert not any("GITHUB_TOKEN" in s or "!git" in s for s in k_srcs)
+    assert any("kaggle kernels push" in s for s in k_srcs)
     assert any("google.colab import userdata" in s for s in c_srcs)

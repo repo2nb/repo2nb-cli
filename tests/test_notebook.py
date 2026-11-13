@@ -1,3 +1,5 @@
+import shlex
+
 from repo2nb.notebook import (
     assemble_notebook,
     content_hash,
@@ -27,14 +29,20 @@ def test_make_writefile_cell_custom_prefix():
     assert cell.source.startswith("%%writefile /content/a.py\nx")
 
 
-def test_content_hash_deterministic():
-    assert content_hash("abc") == content_hash("abc")
+def test_content_hash_known_sha256_and_distinct_content():
+    assert content_hash("abc") == "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
     assert content_hash("abc") != content_hash("abd")
 
 
 def test_make_pip_cell():
     cell = make_pip_cell(["numpy", "pandas"])
     assert cell.source == "%pip install -q numpy pandas"
+
+
+def test_pip_cell_preserves_requirement_bounds_markers_and_shell_characters():
+    requirements = ["numpy>=2,<3", "pandas; python_version >= '3.11'", "pkg @ https://example.test/a?x=1&y=2"]
+    cell = make_pip_cell(requirements)
+    assert shlex.split(cell.source) == ["%pip", "install", "-q", *requirements]
 
 
 def test_assemble_notebook_metadata():

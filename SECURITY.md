@@ -1,11 +1,11 @@
 # Security Policy
 
-repo2nb's core promise: **your credentials never end up inside the generated notebook.**
+repo2nb does not embed authentication credentials itself. Review the source files and outputs you include before sharing a notebook.
 
 ## How repo2nb handles secrets
 
-- Your GitHub token is **never hardcoded** into any cell. The generated auth cell fetches it at runtime from the platform's native secrets manager — Kaggle Secrets (`kaggle_secrets.UserSecretsClient`) or Colab (`google.colab.userdata.get`).
-- Because injection happens at runtime on the platform, a generated notebook is safe to share publicly: it contains no token material.
+- Kaggle notebooks contain no GitHub authentication cells. The bundled Kaggle CLI authenticates locally using its own OAuth or Kaggle API credentials; keep those credentials outside your source repository.
+- Colab notebooks fetch `GITHUB_TOKEN` at runtime with `google.colab.userdata.get`. The generated source contains the secret name, not its value. The running session stores the token in the Git remote URL; do not publish that runtime Git configuration or credential-bearing output.
 - Setup cells carry best-effort *collapse* metadata, but this is cosmetic only — hiding is never part of the security model.
 
 ## What repo2nb writes to your machine
@@ -24,6 +24,7 @@ If you keep secrets in files inside your repo, they will be embedded in the note
 
 | Version | Supported |
 |---|---|
+| 0.3.x | yes |
 | 0.2.x | yes |
 | < 0.2 | no |
 

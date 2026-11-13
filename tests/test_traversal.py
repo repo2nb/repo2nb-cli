@@ -32,7 +32,6 @@ def test_repo2nbignore_glob_and_negation(tmp_path):
 
 
 def test_repo2nbignore_overrides_cli_and_defaults(tmp_path):
-    # negation in .repo2nbignore un-ignores a file caught by an earlier layer
     (tmp_path / "config.yaml").touch()
     _write_ignore(tmp_path, ["!config.yaml"])
 
@@ -60,7 +59,7 @@ def test_no_ignore_file_same_as_before(tmp_path):
 def test_load_ignore_spec_extra_extensions(tmp_path):
     spec = load_ignore_spec(tmp_path, extra_ignore={".mp4", ".yaml"})
     assert spec.match_file("a/b/c.mp4")
-    assert spec.match_file("x.YAML".lower()) or spec.match_file("x.yaml")
+    assert spec.match_file("x.yaml")
 
 
 def test_deep_nesting_traversed(tmp_path):
@@ -86,3 +85,18 @@ def test_traverse_prunes_ignored_dirs(tmp_path):
 
     assert has_git is True
     assert [d for d, _ in tree] == [tmp_path, tmp_path / "src"]
+
+
+def test_traverse_skips_symlink_loops_and_files_outside_repo(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret")
+    (repo / "keep.py").write_text("pass\n")
+    (repo / "loop").symlink_to(repo, target_is_directory=True)
+    (repo / "external.txt").symlink_to(outside)
+
+    tree, _ = traverse(repo)
+
+    assert [file.name for _, files in tree for file in files] == ["keep.py"]
+    assert "skipping symlink" in capsys.readouterr().out

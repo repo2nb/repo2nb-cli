@@ -84,7 +84,6 @@ def test_reverse_partial_cells_deleted(tmp_path):
     nb_path = tmp_path / "out.ipynb"
     convert(repo, nb_path)
 
-    # user deleted the leaf writefile cell on Kaggle before downloading
     nb = nbformat.read(str(nb_path), as_version=4)
     nb.cells = [c for c in nb.cells if "leaf.py" not in c.source]
     nbformat.write(nb, str(nb_path))
@@ -192,5 +191,17 @@ def test_reverse_symlink_loop_skipped_not_crash(tmp_path):
 
     reverse(nb_path, dest, force=True)  # must not raise
 
-    # nothing written through the broken cycle
     assert not list(dest.glob("*/*.py"))
+
+
+def test_reverse_skips_non_string_metadata_path(tmp_path, capsys):
+    nb = nbf.new_notebook()
+    cell = make_writefile_cell("valid.py", "x = 1\n")
+    cell.metadata["repo2nb"]["path"] = ["malformed.py"]
+    nb.cells = [cell]
+    path = tmp_path / "malformed.ipynb"
+    nbformat.write(nb, str(path))
+
+    reverse(path, tmp_path / "restored")
+
+    assert "refusing unsafe path" in capsys.readouterr().out

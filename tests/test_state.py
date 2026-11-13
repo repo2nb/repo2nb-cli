@@ -1,5 +1,3 @@
-import json
-
 from repo2nb.state import ensure_gitignore_entries, load_manifest, save_manifest
 
 
@@ -52,7 +50,9 @@ def test_load_manifest_corrupted(tmp_path):
         load_manifest(tmp_path)
 
 
-def test_manifest_json_valid(tmp_path):
-    save_manifest(tmp_path, {"files": {}})
-    data = json.loads((tmp_path / ".repo2nb" / "manifest.json").read_text())
-    assert isinstance(data, dict)
+def test_gitignore_preserves_entry_without_final_newline(tmp_path):
+    (tmp_path / ".gitignore").write_text("important.txt")
+
+    ensure_gitignore_entries(tmp_path, [".repo2nb/"])
+
+    assert (tmp_path / ".gitignore").read_text().splitlines() == ["important.txt", "", ".repo2nb/"]

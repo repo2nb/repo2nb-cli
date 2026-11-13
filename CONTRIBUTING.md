@@ -1,6 +1,6 @@
 # Contributing to repo2nb
 
-Thanks for helping out! repo2nb is a small tool with a deliberate philosophy: **lightweight, dependency-free, and boring where it counts.** Keep that in mind when adding code.
+Thanks for helping out! repo2nb is a small tool with a deliberate philosophy: **small changes, native tools, and boring code where it counts.** Keep that in mind when adding code.
 
 ## Development setup
 
@@ -16,7 +16,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e . --group dev
 ```
 
-Requires Python 3.10+.
+Requires Python 3.11+. The official Kaggle CLI is a runtime dependency.
 
 ## Running the checks
 
@@ -35,7 +35,7 @@ repo2nb/
 ├── converter.py    # the convert pipeline (cells, manifest, gitignore)
 ├── traversal.py    # file walking + pathspec filtering (.repo2nbignore)
 ├── notebook.py     # cell builders + repo2nb cell/notebook metadata
-├── deps.py         # poetry → uv → requirements.txt → AST resolution chain
+├── deps.py         # poetry → uv → requirements.txt → pyproject → AST resolution chain
 ├── reverse.py      # notebook → files extraction
 ├── sync.py         # incremental notebook updates
 ├── state.py        # .repo2nb/manifest.json + gitignore writes

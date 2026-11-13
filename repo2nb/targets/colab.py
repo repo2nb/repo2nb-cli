@@ -1,7 +1,5 @@
 import nbformat.v4 as nbf
 
-from .kaggle import _get_remote_url
-
 NAME = "colab"
 WORKDIR_PREFIX = "/content/"
 # Colab seeds every session with a sample_data/ directory — never push it.
@@ -11,6 +9,32 @@ GITIGNORE_ENTRIES = ["sample_data/"]
 def collapse_metadata() -> dict:
     # ponytail: best-effort hide; not all viewers respect cellView — see README compatibility table
     return {"cellView": "form"}
+
+
+def _get_remote_url(repo_path) -> str:
+    config_path = repo_path / ".git" / "config"
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                in_origin = False
+                for line in content.splitlines():
+                    line = line.strip()
+                    if line == '[remote "origin"]':
+                        in_origin = True
+                    elif line.startswith('[') and in_origin:
+                        in_origin = False
+                    elif in_origin and line.startswith('url ='):
+                        url = line.split('=', 1)[1].strip()
+                        if "github.com" in url:
+                            suffix = url.split("github.com")[-1].lstrip(":/").rstrip("/")
+                            if suffix.endswith(".git"):
+                                return suffix
+                            return suffix + ".git"
+                        return url
+        except Exception:
+            pass
+    return "user/repo.git"
 
 
 def auth_cells(repo_path, omit_instructions: bool = False) -> list:
@@ -43,7 +67,6 @@ def auth_cells(repo_path, omit_instructions: bool = False) -> list:
         'from google.colab import userdata\n'
         'import subprocess\n'
         'import os\n\n'
-        '# Fetch your Colab Secret (relies on Colab Secrets instead of raw YOUR_TOKEN)\n'
         'token = userdata.get("GITHUB_TOKEN")\n'
         f'remote_url = f"https://{{token}}@github.com/{remote_suffix}"\n\n'
         'subprocess.run(["git", "init"], check=True)\n'

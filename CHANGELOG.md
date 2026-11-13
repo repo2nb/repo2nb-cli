@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.0 — 2026-11-12
+
+### Added
+- Bundle the official `kaggle>=2.2.5` CLI for local authentication and notebook push/pull. Document private notebook metadata, local edit/sync/push, and downloads into a separate directory.
+- Read PEP 621 `[project].dependencies` before falling back to import scanning.
+
+### Changed
+- Kaggle notebooks are execution workspaces: remove GitHub token setup, Git initialization, and notebook-side Git push/pull. Colab keeps its existing Git workflow. Regenerate pre-0.3 notebooks after saving any manual run cells: this removes old Kaggle Git cells and enables managed setup refresh on both platforms. Incremental sync preserves untagged legacy setup cells.
+- Minimum Python version is now 3.11, matching the bundled Kaggle CLI.
+- Keep platform-specific Git handling in Colab instead of making it depend on Kaggle internals.
+
+### Fixed
+- Exclude project modules, packages, and relative imports from inferred pip dependencies; run local dependency exports from the project directory.
+- Sync retains generation filters and refreshes dependency setup after local dependency changes.
+- Create nested directories before reconstructing files, and validate notebook file paths before updating cells.
+
+
 ## 0.2.1 — 2026-08-23
 
 Hot-fix release on top of 0.2.0.

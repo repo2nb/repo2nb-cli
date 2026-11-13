@@ -1,20 +1,14 @@
 from repo2nb.targets import colab, kaggle
 
 
-def test_kaggle_git_cells(tmp_path):
-    setup_cells = kaggle.auth_cells(tmp_path)
-    push_cells = kaggle.workspace_cells()
-
-    assert len(setup_cells) == 4
-    assert len(push_cells) == 2
-
-    config_code = setup_cells[1].source
-    assert "YOUR NAME" in config_code
-    assert "YOUR EMAIL" in config_code
-
-    remote_code = setup_cells[2].source
-    assert "kaggle_secrets" in remote_code
-    assert "user/repo.git" in remote_code
+def test_kaggle_workspace_requires_no_git_auth(tmp_path):
+    assert kaggle.auth_cells(tmp_path) == []
+    cells = kaggle.workspace_cells()
+    assert "repo2nb sync" in cells[0].source
+    assert "kaggle kernels push" in cells[0].source
+    assert cells[1].cell_type == "code"
+    assert cells[1].source == ""
+    assert not any("GITHUB_TOKEN" in c.source or "!git" in c.source for c in cells)
 
 
 def test_get_remote_url(tmp_path):
@@ -23,7 +17,7 @@ def test_get_remote_url(tmp_path):
     config = git_dir / "config"
     config.write_text('[remote "origin"]\n\turl = https://github.com/myuser/myrepo.git\n')
 
-    url = kaggle._get_remote_url(tmp_path)
+    url = colab._get_remote_url(tmp_path)
     assert url == "myuser/myrepo.git"
 
 
@@ -35,7 +29,6 @@ def test_colab_auth_uses_colab_api(tmp_path):
     assert "userdata.get" in remote_code
     assert "kaggle_secrets" not in remote_code
 
-    # Colab-specific tutorial, not a reworded Kaggle one
     tutorial = cells[0].source
     assert "Secrets" in tutorial and "sidebar" in tutorial.lower()
     assert "Add-ons" not in tutorial

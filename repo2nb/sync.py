@@ -3,26 +3,68 @@ import sys
 
 import nbformat
 
-from .converter import _is_binary
-from .notebook import content_hash, make_writefile_cell
+from .deps import resolve_dependencies
+from .notebook import (
+    SETUP_HEADER,
+    content_hash,
+    make_directory_cell,
+    make_markdown_cell,
+    make_pip_cell,
+    make_writefile_cell,
+    write_notebook,
+)
 from .state import load_manifest, save_manifest
 from .targets import get_target
-from .traversal import traverse
+from .traversal import read_text_files, traverse
 
 
-def _current_hashes(repo_path: pathlib.Path, ignore_extra: set) -> dict:
-    tree, _ = traverse(repo_path, extra_ignore=ignore_extra)
-    hashes = {}
-    for dir_path, files in tree:
-        for f in files:
-            if f.suffix.lower() == ".ipynb" or _is_binary(f):
-                continue
-            try:
-                content = f.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                continue
-            hashes[f.relative_to(repo_path).as_posix()] = content_hash(content)
-    return hashes
+def _file_path(cell):
+    tag = cell.get("metadata", {}).get("repo2nb")
+    return tag.get("path") if isinstance(tag, dict) and isinstance(tag.get("path"), str) else None
+
+
+def _replace_source(cell, replacement):
+    cell.source = replacement.source
+    cell.metadata.update(replacement.metadata)
+    cell.outputs = []
+    cell.execution_count = None
+
+
+def _sync_setup(nb, requirements, contents, target) -> bool:
+    desired = {}
+    if requirements:
+        desired["dependencies"] = make_pip_cell(requirements)
+    directory_cell = make_directory_cell(contents, target.WORKDIR_PREFIX)
+    if directory_cell is not None:
+        desired["directories"] = directory_cell
+
+    changed = False
+    for cell in list(nb.cells):
+        kind = cell.metadata.get("repo2nb_setup")
+        if kind not in ("dependencies", "directories"):
+            continue
+        replacement = desired.pop(kind, None)
+        if replacement is None:
+            nb.cells.remove(cell)
+            changed = True
+        elif cell.source != replacement.source:
+            _replace_source(cell, replacement)
+            changed = True
+
+    if desired:
+        header = next((cell for cell in nb.cells if cell.metadata.get("repo2nb_setup") == "header"), None)
+        if header is None:
+            insert_at = next((i for i, cell in enumerate(nb.cells)
+                              if cell.metadata.get("repo2nb_section") == "files" or _file_path(cell)), len(nb.cells))
+            header = make_markdown_cell(SETUP_HEADER)
+            header.metadata["repo2nb_setup"] = "header"
+            nb.cells.insert(insert_at, header)
+        insert_at = nb.cells.index(header) + 1
+        for offset, cell in enumerate(desired.values()):
+            cell.metadata.update(target.collapse_metadata())
+            nb.cells.insert(insert_at + offset, cell)
+        changed = True
+    return changed
 
 
 def _diff(current: dict, old: dict) -> tuple[list, list, list]:
@@ -52,46 +94,52 @@ def sync(repo_path: pathlib.Path, notebook_path: pathlib.Path = None, dry_run: b
     if not nb_path.is_file():
         sys.exit(f"[repo2nb] Target notebook '{nb_path}' not found. Pass --notebook PATH.")
 
-    current = _current_hashes(repo_path, set(ignore_extra or manifest.get("ignore_extra") or []))
-    added, modified, deleted = _diff(current, manifest.get("files", {}))
+    exclusions = set(manifest.get("ignore_extra") or []) if ignore_extra is None else set(ignore_extra)
+    tree, _ = traverse(repo_path, extra_ignore=exclusions)
+    contents = read_text_files(repo_path, tree, set(manifest.get("include") or []))
+    current = {rel: content_hash(content) for rel, content in contents.items()}
+    nb = nbformat.read(str(nb_path), as_version=4)
+    index = {}
+    for cell in nb.cells:
+        rel = _file_path(cell)
+        if rel:
+            if rel in index:
+                sys.exit(f"[repo2nb] Duplicate file cell for '{rel}' — remove the duplicate before syncing.")
+            index[rel] = cell
+    replacements = {rel: make_writefile_cell(rel, content, prefix=target.WORKDIR_PREFIX)
+                    for rel, content in contents.items()}
+    added, modified, deleted = _diff(
+        {rel: cell.source for rel, cell in replacements.items()},
+        {rel: cell.source for rel, cell in index.items()},
+    )
+    requirements = resolve_dependencies(repo_path, tree)[0] if manifest.get("deps", True) else []
+    setup_changed = _sync_setup(nb, requirements, contents, target)
 
     action = "Would update" if dry_run else "Updating"
     print(f"[repo2nb] {action} {nb_path}:")
-    _report(added, modified, deleted)
+    if added or modified or deleted or not setup_changed:
+        _report(added, modified, deleted)
+    if setup_changed:
+        print("  ~ updated:  generated setup cells")
     if dry_run:
         print("[repo2nb] Dry run — no changes written.")
         return
-    if not (added or modified or deleted):
-        return
-
-    nb = nbformat.read(str(nb_path), as_version=4)
-    index = {}
-    for i, cell in enumerate(nb.cells):
-        tag = cell.get("metadata", {}).get("repo2nb")
-        if isinstance(tag, dict) and tag.get("path"):
-            index[tag["path"]] = i
-
-    # Modified: replace source in place; Deleted: drop the cell entirely.
     for rel in modified:
-        content = (repo_path / rel).read_text(encoding="utf-8")
-        cell = nb.cells[index[rel]]
-        new_cell = make_writefile_cell(rel, content, prefix=target.WORKDIR_PREFIX)
-        cell.source = new_cell.source
-        cell.metadata["repo2nb"] = new_cell.metadata["repo2nb"]
-    for i in sorted((index[rel] for rel in deleted), reverse=True):
-        del nb.cells[i]
+        _replace_source(index[rel], replacements[rel])
+    nb.cells = [cell for cell in nb.cells if _file_path(cell) not in deleted]
 
-    # Added: append after the last tagged file cell (no smart placement).
-    insert_at = max(index.values()) + 1 if index else len(nb.cells)
+    insert_at = max((i + 1 for i, cell in enumerate(nb.cells) if _file_path(cell)), default=0)
+    if not insert_at:
+        insert_at = next((i + 1 for i, cell in enumerate(nb.cells)
+                          if cell.metadata.get("repo2nb_section") == "files"), len(nb.cells))
     for offset, rel in enumerate(added):
-        content = (repo_path / rel).read_text(encoding="utf-8")
-        nb.cells.insert(insert_at + offset, make_writefile_cell(rel, content, prefix=target.WORKDIR_PREFIX))
+        nb.cells.insert(insert_at + offset, replacements[rel])
 
-    tmp = nb_path.with_suffix(nb_path.suffix + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        nbformat.write(nb, f)
-    tmp.replace(nb_path)
+    if added or modified or deleted or setup_changed:
+        write_notebook(nb, nb_path)
 
     manifest["files"] = current
+    manifest["notebook"] = str(nb_path.resolve())
+    manifest["ignore_extra"] = sorted(exclusions)
     save_manifest(repo_path, manifest)
     print(f"[repo2nb] Synced {len(added) + len(modified) + len(deleted)} change(s).")

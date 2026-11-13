@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import nbformat
 import nbformat.v4 as nbf
@@ -38,7 +39,6 @@ def test_sync_no_changes(tmp_path, capsys):
     sync(repo, notebook_path=nb_path)
 
     assert "no changes" in capsys.readouterr().out
-    # .gitignore is auto-created by generation and included like any other file
     assert _tagged_paths(nb_path) == [".gitignore", "main.py", "src/util.py"]
 
 
@@ -52,7 +52,7 @@ def test_sync_added_file_appended_after_last_tagged_cell(tmp_path):
     paths = _tagged_paths(nb_path)
     assert paths == [".gitignore", "main.py", "src/util.py", "new_mod.py"]
     nb = nbformat.read(str(nb_path), as_version=4)
-    new_cell = nb.cells[-1]
+    new_cell = _find_cell(nb, "new_mod.py")
     assert "%%writefile" in new_cell.source and "new = 1" in new_cell.source
 
 
@@ -84,9 +84,6 @@ def test_sync_deleted_file_removes_cell(tmp_path):
 
     paths = _tagged_paths(nb_path)
     assert "src/util.py" not in paths
-    nb = nbformat.read(str(nb_path), as_version=4)
-    # the writefile cell is gone entirely, not just flagged
-    assert not any("repo2nb" in c.metadata and c.metadata["repo2nb"]["path"] == "src/util.py" for c in nb.cells)
 
 
 def test_sync_dry_run_touches_nothing(tmp_path):
@@ -162,3 +159,80 @@ def test_sync_updates_manifest(tmp_path):
 
     manifest = json.loads((repo / ".repo2nb" / "manifest.json").read_text())
     assert set(manifest["files"]) == {".gitignore", "main.py", "new_mod.py"}
+
+
+def test_sync_recovers_missing_cells_and_inserts_before_manual_workspace(tmp_path):
+    repo = _make_repo(tmp_path)
+    nb_path = _generate(repo, tmp_path)
+    nb = nbformat.read(str(nb_path), as_version=4)
+    nb.cells.remove(_find_cell(nb, "main.py"))
+    manual = nbf.new_code_cell("print('keep my results')", metadata={"repo2nb_setup": {"custom": True}})
+    manual.outputs = [nbf.new_output("stream", name="stdout", text="keep my results\n")]
+    nb.cells.append(manual)
+    nbformat.write(nb, str(nb_path))
+    (repo / "src" / "util.py").unlink()
+    (repo / "new.py").write_text("value = 2\n")
+
+    sync(repo)
+
+    nb = nbformat.read(str(nb_path), as_version=4)
+    assert set(_tagged_paths(nb_path)) == {".gitignore", "main.py", "new.py"}
+    assert nb.cells.index(_find_cell(nb, "new.py")) < next(i for i, cell in enumerate(nb.cells) if cell.id == manual.id)
+    assert nb.cells[-1] == manual
+
+
+def test_sync_refreshes_dependencies_and_keeps_no_deps_selection(tmp_path):
+    repo = _make_repo(tmp_path)
+    (repo / "requirements.txt").write_text("numpy>=2\n")
+    nb_path = _generate(repo, tmp_path)
+    (repo / "requirements.txt").write_text("numpy>=2\npandas; python_version >= '3.11'\n")
+
+    sync(repo)
+
+    nb = nbformat.read(str(nb_path), as_version=4)
+    pip_cells = [cell for cell in nb.cells if cell.metadata.get("repo2nb_setup") == "dependencies"]
+    assert len(pip_cells) == 1
+    assert "pandas" in pip_cells[0].source
+
+    convert(repo, nb_path, deps=False)
+    (repo / "requirements.txt").write_text("scipy\n")
+    sync(repo)
+    nb = nbformat.read(str(nb_path), as_version=4)
+    assert not any(cell.source.startswith("%pip install") for cell in nb.cells)
+
+
+def test_sync_preserves_included_files_and_resolved_notebook_path(tmp_path, monkeypatch):
+    repo = _make_repo(tmp_path)
+    (repo / "values.csv").write_text("a,b\n1,2\n")
+    monkeypatch.chdir(tmp_path)
+    convert(repo, Path("out.ipynb"), include={".csv"})
+    (repo / "values.csv").write_text("a,b\n3,4\n")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    sync(repo)
+
+    nb = nbformat.read(str(tmp_path / "out.ipynb"), as_version=4)
+    assert "3,4" in _find_cell(nb, "values.csv").source
+
+
+def test_sync_legacy_manifest_preserves_untagged_setup(tmp_path):
+    repo = _make_repo(tmp_path)
+    nb_path = _generate(repo, tmp_path)
+    manifest_path = repo / ".repo2nb" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest.pop("include")
+    manifest.pop("deps")
+    manifest_path.write_text(json.dumps(manifest))
+    nb = nbformat.read(str(nb_path), as_version=4)
+    legacy = nbf.new_code_cell("%pip install old-manual-choice")
+    nb.cells.insert(0, legacy)
+    nbformat.write(nb, str(nb_path))
+    (repo / "main.py").write_text("import numpy\n")
+
+    sync(repo)
+
+    nb = nbformat.read(str(nb_path), as_version=4)
+    assert nb.cells[0] == legacy
+    assert any(cell.metadata.get("repo2nb_setup") == "dependencies" and "numpy" in cell.source for cell in nb.cells)
